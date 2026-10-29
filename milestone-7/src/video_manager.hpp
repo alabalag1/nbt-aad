@@ -36,6 +36,9 @@ public:
     // session ended. fixCarPlayLayer(): LayerManager layer 0x800d0000 visible and full screen (setVisible(true)).
     static bool cpHandoff();
     bool prepareForSession();
+    // iPhone mirroring: the stream's own size (portrait 332x720, landscape apps wider). The next prepareForSession()
+    // rebuilds the decoder for it and fits the picture into the panel, centred. 0x0 = Android Auto's 1280x720 canvas.
+    void setSourceGeometry(uint32_t width, uint32_t height);
     bool retuneForCarPlay();
     bool decoderInCarPlayMode();
     void fixCarPlayLayer();
@@ -91,6 +94,10 @@ private:
     std::string grp_name_;
     pthread_mutex_t decoder_mutex_; // createDecoder / destroyDecoder / retuneForCarPlay
     bool cp_mode_;                  // guarded by decoder_mutex_: context carries CarPlay's settings
+    volatile uint32_t src_w_, src_h_;   // setSourceGeometry(); 0 = Android Auto canvas. Read by the worker
+    uint32_t built_w_, built_h_;        // guarded by decoder_mutex_: what the current context was created for
+    uint32_t srcWidth() const;
+    uint32_t srcHeight() const;
     std::vector<VideoQueueItem> frame_queue_;
     std::vector<uint8_t> cached_codec_config_;
 };

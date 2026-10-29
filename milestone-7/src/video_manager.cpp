@@ -107,7 +107,8 @@ VideoManager::VideoManager()
       reset_pending_(false),
       worker_busy_(false),
       strm_lib_(NULL),
-      cp_mode_(false) {
+      cp_mode_(false),
+      src_w_(0), src_h_(0), built_w_(0), built_h_(0) {
     memset(&sink_, 0, sizeof(sink_));
     pthread_mutex_init(&queue_mutex_, NULL);
     pthread_mutex_init(&decoder_mutex_, NULL);
@@ -562,11 +563,19 @@ bool VideoManager::createDecoder() {
         // Step 1: Attach Output to Screen Window 1280 and the exact
         // window group registered above, matching factory CarPlay's
         // libconn_carplay_video_mmr.so behavior.
+        int dx = 0, dy = 0;
+        int dw = vidEnvInt("NBT_VID_DST_W", nbt::mmrDstWidth()), dh = vidEnvInt("NBT_VID_DST_H", nbt::mmrDstHeight());
+        if (src_w_ && src_h_) {   // iPhone mirroring: whole stream on the panel, aspect kept, centred
+            const nbt::CarConfig& c = nbt::carConfig();
+            if ((uint64_t)src_w_ * c.screenH >= (uint64_t)src_h_ * c.screenW) { dw = c.screenW; dh = (int)(src_h_ * c.screenW / src_w_); }
+            else { dh = c.screenH; dw = (int)(src_w_ * c.screenH / src_h_); }
+            dx = (c.screenW - dw) / 2;
+            dy = (c.screenH - dh) / 2;
+        }
         char out_url[256];
         snprintf(out_url, sizeof(out_url),
-                 "screen:/any?winid=%s&nodstviewport=0&dstx=0&dsty=0&dstw=%d&dsth=%d&wingrp=%s",
-                 NBT_SCREEN_WINDOW_ID, vidEnvInt("NBT_VID_DST_W", nbt::mmrDstWidth()),
-                 vidEnvInt("NBT_VID_DST_H", nbt::mmrDstHeight()), grp_name_.c_str());
+                 "screen:/any?winid=%s&nodstviewport=0&dstx=%d&dsty=%d&dstw=%d&dsth=%d&wingrp=%s",
+                 NBT_SCREEN_WINDOW_ID, dx, dy, dw, dh, grp_name_.c_str());
         printf("[VideoManager] MM-Renderer output URL: %s\n", out_url);
         mmr_output_id_ = fn_out_attach(mmr_ctxt_, out_url, "video");
 
@@ -606,8 +615,8 @@ bool VideoManager::createDecoder() {
         // the car display's 8:3 aspect ratio and maps 1:1 onto the 1280x480 panel.
         char in_url[256];
         snprintf(in_url, sizeof(in_url),
-                 "mdevpush:/dev/name/local/mdev?fourcc=H264&queue_capacity=60&video.frame_rate=60&video.depth=16&video.width=1280&video.height=%d",
-                 vidEnvInt("NBT_VID_SRC_H", 720));
+                 "mdevpush:/dev/name/local/mdev?fourcc=H264&queue_capacity=60&video.frame_rate=60&video.depth=16&video.width=%u&video.height=%u",
+                 (unsigned)srcWidth(), (unsigned)srcHeight());
         mmr_input_id_ = fn_in_attach(mmr_ctxt_, in_url, "track");
 
         // Re-apply parameters AFTER input_attach creates the track engine.
@@ -671,7 +680,20 @@ bool VideoManager::createDecoder() {
     accepting_ = (mdev_fd_ >= 0);
     pthread_mutex_unlock(&queue_mutex_);
     cp_mode_ = false;
+    built_w_ = src_w_;
+    built_h_ = src_h_;
     return mmr_ctxt_ != NULL && mdev_fd_ >= 0;
+}
+
+uint32_t VideoManager::srcWidth() const { return src_w_ ? src_w_ : 1280; }
+uint32_t VideoManager::srcHeight() const { return src_h_ ? src_h_ : (uint32_t)vidEnvInt("NBT_VID_SRC_H", 720); }
+
+void VideoManager::setSourceGeometry(uint32_t width, uint32_t height) {
+    pthread_mutex_lock(&decoder_mutex_);
+    src_w_ = width;
+    src_h_ = height;
+    pthread_mutex_unlock(&decoder_mutex_);
+    if (width) printf("[VideoManager] Stream size %ux%u (iPhone mirroring)\n", (unsigned)width, (unsigned)height);
 }
 
 bool VideoManager::prepareForSession() {
@@ -681,8 +703,9 @@ bool VideoManager::prepareForSession() {
     if (!mmr_ctxt_) {
         printf("[VideoManager] Android Auto phone connected: creating the decoder context now\n");
         ok = createDecoder();
-    } else if (cp_mode_) {
-        printf("[VideoManager] Android Auto phone connected: rebuilding the decoder context (it carried CarPlay's settings)\n");
+    } else if (cp_mode_ || built_w_ != src_w_ || built_h_ != src_h_) {
+        printf("[VideoManager] Phone connected: rebuilding the decoder context (%s)\n",
+               cp_mode_ ? "it carried CarPlay's settings" : "different stream size");
         destroyDecoder();
         usleep(50000);
         ok = createDecoder();
@@ -1109,7 +1132,7 @@ void VideoManager::workerLoop() {
                 // mdemux_process_packet; the format packet is our only observed trigger
                 // into that dispatcher, even when it is later reported unchanged.
                 bool ok = sendMdevSync() &&
-                          sendMdevFormat(1280, (uint32_t)vidEnvInt("NBT_VID_SRC_H", 720), 60) &&
+                          sendMdevFormat(srcWidth(), srcHeight(), 60) &&
                           sendMdevConfig(&item.data[0], item.data.size());
                 mdev_initialized_ = ok;
                 if (!ok) {
@@ -1117,7 +1140,7 @@ void VideoManager::workerLoop() {
                 }
             } else {
                 if (!mdev_initialized_) {
-                    bool ok = sendMdevSync() && sendMdevFormat(1280, (uint32_t)vidEnvInt("NBT_VID_SRC_H", 720), 60);
+                    bool ok = sendMdevSync() && sendMdevFormat(srcWidth(), srcHeight(), 60);
                     mdev_initialized_ = ok;
                     if (!ok) {
                         printf("[VideoManager] Warning: mdev format handshake failed; dropping frame until retry.\n");

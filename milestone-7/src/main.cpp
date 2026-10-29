@@ -98,6 +98,7 @@
 #include "voice_scenario.hpp"
 #include "bt_play.hpp"
 #include "usb_log.hpp"
+#include "mirror_input.hpp"
 #include <termios.h>
 
 #include <stdio.h>
@@ -116,6 +117,8 @@
 
 static volatile sig_atomic_t g_running = 1;
 static nbt::AASession g_session;
+static volatile bool g_sessionActive = false;   // AA session running (set by connect/end callbacks)
+static bool aaBusy() { return g_session.isActive() || g_sessionActive; }   // mirroring yields to Android Auto
 
 // ---- Single instance + control port (NBT_CTL=0 disables, NBT_CTL_PORT overrides 52790) -------------------
 // The iDrive menu entry (plugin/libhmiaad.so) simply starts /opt/aa/nbt-aad every time it is selected. The first
@@ -304,7 +307,6 @@ static void writeUiState(const char* state, int overlay) {
     if (w != n && !s_warned) { printf("[UiState] short write to %s\n", kUiStateFile); s_warned = true; }
     close(fd);
 }
-static volatile bool g_sessionActive = false;   // AA session running (set by connect/end callbacks)
 static nbt::VideoManager* g_video = NULL;       // for the session callbacks (valid between init and teardown)
 static nbt::AudioManager* g_audio = NULL;       // same lifetime rule as g_video
 // Bluetooth audio mode (default; NBT_AUDIO_BT=0 turns it off): AA audio stays on the phone's Bluetooth A2DP link; we only select the car's BT source.
@@ -810,7 +812,10 @@ static void onClientConnected(int client_fd, void* user_data) {
     nbt::TcpServer* server = reinterpret_cast<nbt::TcpServer*>(user_data);
     printf("[Main] Android Auto client connected on fd %d. Initializing aasdk session...\n", client_fd);
     g_sessionActive = true;
-    if (g_video && nbt::VideoManager::cpHandoff()) g_video->prepareForSession();   // decoder ready before frames
+    if (g_video) {   // decoder ready before frames; back to the 1280x720 canvas if an iPhone mirror set its own size
+        g_video->setSourceGeometry(0, 0);
+        g_video->prepareForSession();   // no-op unless there's no context yet or it was built for CarPlay / a mirror
+    }
     if (!g_session.start(client_fd)) {
         // start() closed the fd; make sure the server does not wait for a session that never began
         g_sessionActive = false;
@@ -1176,6 +1181,7 @@ int main(int argc, char* argv[]) {
     } else {
         printf("[Main] Wireless off (NBT_WIRELESS=0): outbound phone scanner mode.\n");
     }
+    nbt::startMirrorInput(&video, &aaBusy);   // iPhone screen mirroring (airplay-mirrord), display only
 
     printf("[Main] Daemon running. Press Ctrl+C to terminate.\n");
 
@@ -1228,7 +1234,8 @@ int main(int argc, char* argv[]) {
     while (g_running) {
         usleep(250000);
         bool act = g_session.isActive();
-        if (act || g_sessionActive) cp_idle_ticks = 0;
+        bool live = act || nbt::mirrorActive();   // a phone is on screen: Android Auto, or an iPhone mirroring
+        if (live || g_sessionActive) cp_idle_ticks = 0;
         else if (++cp_idle_ticks == 10 && nbt::VideoManager::cpHandoff()) video.retuneForCarPlay();
         {
             int n = dayNightToNight(g_dayNight);           // -1: no change / invalid, keep what the phone has
@@ -1239,7 +1246,7 @@ int main(int argc, char* argv[]) {
             }
         }
         {
-            const char* st = act ? "connected" : ((g_btLink || g_sessionActive) ? "connecting" : "idle");
+            const char* st = live ? "connected" : ((g_btLink || g_sessionActive) ? "connecting" : "idle");
             uint32_t mp = g_keyToPhoneMs;
             bool menuRecent = mp && (uint32_t)(monoMs() - mp) < 3000u;   // a hard key went to the phone
             if (mp && !menuRecent) g_keyToPhoneMs = 0;
@@ -1292,7 +1299,7 @@ int main(int argc, char* argv[]) {
         ++log_sync_ticks;
         if ((log_sync_ticks % 20) == 0) serviceUsbLog(false);   // every 5 s: stick plugged in / removed, checkbox
         if (logPersistent() && (log_sync_ticks % 8) == 0) { fflush(stdout); fsync(fileno(stdout)); }
-        if (act && !was_active) { g_userExit = 0; g_carExit = 0; }   // a new phone session comes up in Android Auto
+        if (live && !was_active) { g_userExit = 0; g_carExit = 0; }   // a new phone session comes up in Android Auto
         if (g_backState == 1 && (uint32_t)(monoMs() - g_backDownMs) >= backHoldMs()) {
             // Car-side minimize, like reverse: only the overlay goes down. Telling the phone (unrequested UNFOCUSED,
             // NBT_BACK_HOLD_FOCUS=1) can make it ask for the screen right back, which re-showed AA at once.
@@ -1343,7 +1350,7 @@ int main(int argc, char* argv[]) {
             if (reverse_focus && act && !g_userExit) g_session.postVideoFocus(!park && !reverse);
             was_park = park;
         }
-        bool want = (hide_idle ? act : true) && !g_userExit && !reverse && !park;
+        bool want = (hide_idle ? live : true) && !g_userExit && !reverse && !park;
         g_inputToPhone = (want && act) ? 1 : 0;
         nbt::setTouchOwned(g_inputToPhone != 0);      // UDP 30567 goes back to the HMI whenever iDrive has the screen
         if (want != overlay_on || (force_show && want)) {
@@ -1365,7 +1372,7 @@ int main(int argc, char* argv[]) {
                 if (reassert_ticks == 20) reassert_ticks = -1;
             }
         }
-        if (act) {
+        if (live) {
             if (!was_active) {
                 // The HMI / LayerManager may have rearranged layers and window order since the daemon
                 // started (minutes ago, with iDrive in use): put our window back on top for the session.
@@ -1391,7 +1398,7 @@ int main(int argc, char* argv[]) {
         } else {
             active_ticks = 0;
         }
-        was_active = act;
+        was_active = live;
     }
 
     // Cleanup & graceful teardown
@@ -1399,6 +1406,7 @@ int main(int argc, char* argv[]) {
     video.setVisible(false);   // give iDrive back first: any of the stop() calls below may block
     if (mic_live) { if (g_audio) g_audio->stopMic(); else mic.stop(); }
     voice.deactivate("shutdown");   // never leave the car mic scenario active behind us
+    nbt::stopMirrorReceiver();
     tcp_server.stop();         // no more onClientConnected -> no session can start behind our back
     g_session.stop();
     g_video = NULL;
