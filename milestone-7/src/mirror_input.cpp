@@ -113,18 +113,23 @@ static void startReceiver() {
     }
     const char* name = getenv("NBT_MIRROR_NAME");
     if (!name || !*name) name = "iDrive";
+    // Display size offered to the phone (receiver -s). Default 1280x720: iOS never encodes fewer than 720 lines, so
+    // offering the panel (1440x540) only got 1920x720 / 1564x720 landscape, bigger and no sharper (Mac test
+    // 2026-10-30). NBT_MIRROR_SIZE overrides it.
+    const char* size = getenv("NBT_MIRROR_SIZE");
+    if (!size || !*size) size = "1280x720";
 #ifdef __QNXNTO__
     // QNX: fork() is unsupported once the process has threads; spawn is. Output goes to our log (inherited stdout).
-    pid_t pid = spawnl(P_NOWAIT, cmd, cmd, "-n", name, (char*)NULL);
+    pid_t pid = spawnl(P_NOWAIT, cmd, cmd, "-n", name, "-s", size, (char*)NULL);
 #else
     pid_t pid = fork();
     if (pid == 0) {
-        execl(cmd, cmd, "-n", name, (char*)NULL);
+        execl(cmd, cmd, "-n", name, "-s", size, (char*)NULL);
         _exit(127);
     }
 #endif
     if (pid > 0) s_receiver = pid;
-    printf("[Mirror] receiver %s \"%s\": %s\n", cmd, name, pid > 0 ? "started" : strerror(errno));
+    printf("[Mirror] receiver %s \"%s\" %s: %s\n", cmd, name, size, pid > 0 ? "started" : strerror(errno));
 }
 
 void stopMirrorReceiver() {

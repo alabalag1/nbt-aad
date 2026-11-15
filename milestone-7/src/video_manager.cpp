@@ -1060,6 +1060,14 @@ bool VideoManager::postVideoFrame(const uint8_t* data, size_t length, uint64_t p
 
     // Non-blocking enqueue: network thread pushes frame and returns immediately!
     pthread_mutex_lock(&queue_mutex_);
+    // iPhone mirroring sends a keyframe only at the start and on rotation, so a dropped frame smears the picture
+    // until then. Wait for the decoder instead; the socket backs up and the phone slows down. A decoder stuck for
+    // more than 1 s falls through to the drop below, so the mirror thread can't hang.
+    for (int i = 0; i < 200 && src_w_ && accepting_ && worker_running_ && frame_queue_.size() >= 15; ++i) {
+        pthread_mutex_unlock(&queue_mutex_);
+        usleep(5000);   // ponytail: polling; a "space" condvar if this ever shows up in CPU use
+        pthread_mutex_lock(&queue_mutex_);
+    }
     if (!accepting_) { pthread_mutex_unlock(&queue_mutex_); return false; }
     if (frame_queue_.size() >= 15) {
         bool dropped = false;
