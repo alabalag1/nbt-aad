@@ -36,6 +36,7 @@ TEXTS = {1: "Android Auto", 2: "Android Auto: Connecting...",   # 2 = entry text
          35: "Checking rules...", 36: "Rules in place", 37: "Rules in place, not active", 38: "Rules not in place",
          39: "Removing rules...", 40: "Rules successfully removed", 41: "Packet filter off, as before",
          42: "Done, not active - see log", 43: "Failed - see log",
+         48: "iPhone Mirroring", 49: "Show iPhone screen",   # 48/49 = mirroring entry + page (rhmiapp-64-mirror)
          44: "CarPlay compatibility",   # 44 = CarPlay compatibility checkbox (rhmiapp-54-cpcompat)
          17: ABOUT}
 # Per-language overrides (ASCII only, like the language names above).

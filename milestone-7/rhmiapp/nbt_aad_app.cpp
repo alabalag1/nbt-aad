@@ -67,7 +67,7 @@
 #include <string>
 #endif
 
-#define NBT_AAD_APP_VERSION "rhmiapp-64-navsettings (" __DATE__ " " __TIME__ ")"
+#define NBT_AAD_APP_VERSION "rhmiapp-64-mirror (" __DATE__ " " __TIME__ ")"
 
 extern char** environ;
 
@@ -927,6 +927,8 @@ unsigned g_shownText = kTextDefault;
 unsigned g_shownRow = kTextStart;
 
 struct DaemonState {
+    bool mirror;        // the daemon wrote "mirroring" (an iPhone on screen); state then reads "connected" so the hold,
+                        // the hard-key step-aside and "show" treat it like Android Auto; only the texts tell them apart
     char state[24];     // idle | connecting | connected
     int pid;            // > 0 and alive, else 0
     int overlay;        // 1 = Android Auto on screen, knob goes to the phone; 2 = same, BACK held (v1.8.26+);
@@ -974,6 +976,7 @@ bool controlPortBusy() {
 DaemonState readDaemonState() {
     DaemonState d;
     strcpy(d.state, "idle");
+    d.mirror = false;
     d.pid = 0;
     d.overlay = 0;
     FILE* f = fopen(kStateFile, "r");
@@ -983,7 +986,8 @@ DaemonState readDaemonState() {
         int n = fscanf(f, "%23s %d %d", st, &pid, &ov);
         fclose(f);
         if (n >= 2 && pidAlive(pid)) {
-            strcpy(d.state, st);
+            d.mirror = !strcmp(st, "mirroring");
+            strcpy(d.state, d.mirror ? "connected" : st);
             d.pid = pid;
             d.overlay = (n >= 3) ? ov : 0;
             return d;
@@ -1004,7 +1008,8 @@ bool g_settingsFocused = false; // focus notification of hmiState 14 (the Settin
 // "The driver is in our own UI" (menu or its Settings page). Used by the hold: coming back to either is not a car
 // screen taking over. g_menuFocused alone stays the answer to "is the menu itself on top", which is what the
 // connected-after-Start return to the main menu tests (a driver reading Settings must not be pulled out of it).
-bool inOurMenu() { return g_menuFocused || g_settingsFocused; }
+bool g_mirrorFocused = false;  // focus notification of hmiState 16 (the iPhone Mirroring page)
+bool inOurMenu() { return g_menuFocused || g_settingsFocused || g_mirrorFocused; }
 bool g_wantHome = false;       // Start was pressed: return to the main menu once the phone is connected
 bool g_entryStart = false;     // the Open Android Auto entry started nbt-aad: show it on connect if our menu is on top
 pid_t g_autostartPid = 0;     // automatic launch waiting for its first projection handoff
@@ -2337,6 +2342,7 @@ void showVersions(bmw::PluginApp* app) {
     alog("Version page: %s", l);
 }
 bool onVersionFocus(void* /*app*/, const bmw::Parcel& /*p*/) { showVersions(g_runApp); return false; }
+void showMirror(bmw::PluginApp* app);
 
 void statusRun(void* /*self*/) {
     bmw::PluginApp* app = g_runApp;
@@ -2356,6 +2362,7 @@ void statusRun(void* /*self*/) {
     if (!g_lciMediaShown) showLciMedia(app);
     if (!g_cpCompatShown) showCpCompat(app);
     servicePfOps(app);
+    if (g_mirrorFocused) showMirror(app);
     if (!g_stopPid) recoverScreenIfUnclean();            // killed / crashed outside Force Stop
     serviceStop();
     serviceAutostart();
@@ -2371,7 +2378,7 @@ void statusRun(void* /*self*/) {
         g_shownText = want;
     }
     if (!fileExists("/opt/aa/spinner.disable")) setConnectingAnimation(app, connecting);
-    unsigned row = connected ? kTextRowOpen : connecting ? kTextRowConnecting : kTextStart;   // our menu's Start row
+    unsigned row = (connected && !d.mirror) ? kTextRowOpen : connecting ? kTextRowConnecting : kTextStart;   // our menu's Start row
     if (row != g_shownRow) {
         bmw::TextID text(row);
         app->updateModel(kStartRowModel, text);
@@ -2418,6 +2425,86 @@ void startStatusPolling(bmw::PluginApp* app) {
     g_runApp = app;
     app->post(reinterpret_cast<bmw::Runnable*>(&g_statusRunnable), 2000);
     alog("status polling posted (%s every %u ms)", kStateFile, kStatusPollMs);
+}
+
+// ---- iPhone Mirroring entry + page (rhmiapp-64-mirror) ------------------------------------------------------------
+// nbt-aad runs the AirPlay receiver (airplay-mirrord) whenever it runs, so the entry only has to start it. The page
+// says what is on screen and how to start mirroring on the iPhone (the car's CarPlay Wi-Fi from iap2.cfg).
+const unsigned    kActMirrorEntry = 180;     // <entryButton action="180"> of the "iPhone Mirroring" pluginApp
+const unsigned    kActMirrorShow  = 186;     // row "Show iPhone screen"
+const unsigned    kMirrorState    = 16;      // <hmiState id="16">
+const unsigned    kEvOpenMirror   = 54;      // <focusEvent id="54" target="16"/>
+const unsigned    kMirrorModel[5] = { 181, 182, 183, 184, 185 };   // Richtext lines, ~34 chars each
+
+void readCarWifi(char* ssid, size_t n) {
+    snprintf(ssid, n, "the car's CarPlay Wi-Fi");
+    const char* paths[2] = { "/var/opt/conn/carplay/iap2.cfg", "/fs/sda1/opt/conn/carplay/iap2.cfg" };
+    for (int i = 0; i < 2; ++i) {
+        FILE* f = fopen(paths[i], "r");
+        if (!f) continue;
+        char line[160];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "SSID=", 5) != 0) continue;
+            line[strcspn(line, "\r\n")] = 0;
+            if (line[5]) snprintf(ssid, n, "%s", line + 5);
+            break;
+        }
+        fclose(f);
+        return;
+    }
+}
+
+void showMirror(bmw::PluginApp* app) {
+    if (!app) return;
+    static char shown[5][64];
+    DaemonState d = readDaemonState();
+    char ssid[40];
+    readCarWifi(ssid, sizeof(ssid));
+    char l[5][64];
+    const char* st = d.pid == 0 ? "Status: starting..."
+                     : d.mirror ? "Status: iPhone is on screen"
+                     : !strcmp(d.state, "connected") ? "Status: off (Android Auto is on)"
+                     : "Status: ready, waiting for iPhone";
+    snprintf(l[0], sizeof(l[0]), "%s", st);
+    snprintf(l[1], sizeof(l[1]), "1. iPhone Settings > Wi-Fi:");
+    snprintf(l[2], sizeof(l[2]), "   join %s", ssid);
+    snprintf(l[3], sizeof(l[3]), "2. Control Center > Screen");
+    snprintf(l[4], sizeof(l[4]), "   Mirroring > iDrive");
+    for (int i = 0; i < 5; ++i) {
+        if (!strcmp(shown[i], l[i])) continue;
+        app->updateModel(kMirrorModel[i], bmw::BasicString<char>(l[i]));
+        snprintf(shown[i], sizeof(shown[i]), "%s", l[i]);
+        if (i == 0) alog("mirror page: %s", l[i]);
+    }
+}
+
+bool onMirrorFocus(void*, const bmw::Parcel& p) {
+    bool f = false;
+    p.readBool(f);
+    g_focusKnown = true;
+    g_mirrorFocused = f;
+    alog("mirror state %u focus -> %d", kMirrorState, (int)f);
+    if (f) showMirror(g_runApp);
+    return true;
+}
+
+bool onMirrorEntry(void* self, const bmw::Parcel&) {
+    bmw::PluginApp* app = g_runApp ? g_runApp : static_cast<bmw::PluginApp*>(self);
+    DaemonState d = readDaemonState();
+    alog("iPhone Mirroring entry (raAction %u): nbt-aad %s (pid %d)", kActMirrorEntry, d.mirror ? "mirroring" : d.state, d.pid);
+    if (d.pid == 0 && !g_stopPid) {
+        bootGuardReset("iPhone Mirroring entry");
+        launchDaemon();                                  // the receiver comes up with it; no Android Auto hand-off
+    }
+    if (app) app->triggerEvent(kEvOpenMirror);
+    return true;
+}
+
+bool onMirrorShow(void*, const bmw::Parcel&) {
+    DaemonState d = readDaemonState();
+    if (d.mirror) { alog("mirror page: Show iPhone screen"); sendShow(); }
+    else alog("mirror page: Show pressed, no iPhone mirroring (%s)", d.state);
+    return true;
 }
 
 // ---- the app object -----------------------------------------------------------------------------------------------
@@ -2588,6 +2675,8 @@ bool appOnInit(bmw::PluginApp* self) {
     addAction(self, kActPfInstall, &onPfInstallRow);
     addAction(self, kActPfCheck, &onPfCheckRow);
     addAction(self, kActPfUninstall, &onPfUninstallRow);
+    addAction(self, kActMirrorEntry, &onMirrorEntry);
+    addAction(self, kActMirrorShow, &onMirrorShow);
     g_initTime = time(NULL);
     {
         bmw::ActionDelegate d;
@@ -2602,6 +2691,10 @@ bool appOnInit(bmw::PluginApp* self) {
         vp.object = self;
         vp.stub = &onVersionFocus;
         self->addHandler(kVersionState, kHandlerFocus, vp);
+        bmw::ActionDelegate mp;                          // iPhone Mirroring page: status lines while shown
+        mp.object = self;
+        mp.stub = &onMirrorFocus;
+        self->addHandler(kMirrorState, kHandlerFocus, mp);
         bmw::ActionDelegate f;
         f.object = self;
         f.stub = &onAaFocus;

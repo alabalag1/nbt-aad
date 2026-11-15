@@ -31,6 +31,7 @@
       <raAction id="136"/>
       <raAction id="137"/>
       <raAction id="159"/>
+      <raAction id="186"/>
     </actions>
     <models>
       <textIdModel id="3" textId="1">
@@ -165,12 +166,25 @@
       <textIdModel id="161" textId="44">
         <synonyms/>
       </textIdModel>
+      <!-- iPhone Mirroring page (hmiState 16): status + how-to lines (Richtext, filled by the app), Show row -->
+      <raDataModel id="181" modelType="Richtext"/>
+      <raDataModel id="182" modelType="Richtext"/>
+      <raDataModel id="183" modelType="Richtext"/>
+      <raDataModel id="184" modelType="Richtext"/>
+      <raDataModel id="185" modelType="Richtext"/>
+      <textIdModel id="187" textId="49">
+        <synonyms/>
+      </textIdModel>
+      <textIdModel id="188" textId="48">
+        <synonyms/>
+      </textIdModel>
     </models>
     <events>
       <focusEvent id="50" targetModel="40"/>
       <focusEvent id="51" targetModel="41"/>
       <focusEvent id="52" target="13"/>
       <focusEvent id="53" target="10"/>
+      <focusEvent id="54" target="16"/>
     </events>
     <hmiStates>
       <hmiState id="10" text="Android Auto" textModel="3">
@@ -273,6 +287,38 @@
           </label>
         </components>
       </hmiState>
+      <!-- iPhone Mirroring (rhmiapp-64-mirror): opened by the "iPhone Mirroring" entry (raAction 180, focusEvent 54).
+           Appended after state 15 so the 50000+n numbering of the existing states does not move. -->
+      <hmiState id="16" text="iPhone Mirroring" textModel="188">
+        <components>
+          <label id="195" model="181" text="Status">
+            <properties>
+              <property id="2" value="false"/>
+            </properties>
+          </label>
+          <label id="196" model="182" text="1.">
+            <properties>
+              <property id="2" value="false"/>
+            </properties>
+          </label>
+          <label id="197" model="183" text="Wi-Fi">
+            <properties>
+              <property id="2" value="false"/>
+            </properties>
+          </label>
+          <label id="198" model="184" text="2.">
+            <properties>
+              <property id="2" value="false"/>
+            </properties>
+          </label>
+          <label id="199" model="185" text="Mirroring">
+            <properties>
+              <property id="2" value="false"/>
+            </properties>
+          </label>
+          <button action="186" id="189" model="187" text="Show iPhone screen"/>
+        </components>
+      </hmiState>
     </hmiStates>
   </pluginApp>
   <!-- One-press entry "Open Android Auto" (raAction 2), right after the menu entry. Property 55 is its UUID: without
@@ -301,6 +347,40 @@
       <hmiState id="110" text="Open Android Auto" textModel="103">
         <components>
           <image id="111" model="112">
+            <properties>
+              <property id="3" value="true"/>
+              <property id="9" value="549"/>
+              <property id="10" value="484"/>
+              <property id="20" value="0"/>
+              <property id="21" value="0"/>
+            </properties>
+          </image>
+        </components>
+      </hmiState>
+    </hmiStates>
+  </pluginApp>
+<!-- "iPhone Mirroring" entry (raAction 180): starts nbt-aad if needed (it runs the AirPlay receiver) and opens
+       hmiState 16 with the status and the steps. -->
+  <pluginApp applicationType="Custom" applicationWeight="198" entryButtonFocusID="32754" insertAfterFocusID="32753" insertStateID="20" text="iPhone Mirroring">
+    <comment/>
+    <entryButton action="180" id="190" model="191" imageModel="192" previewModel="193">
+      <properties/>
+    </entryButton>
+    <actions>
+      <raAction id="180"/>
+    </actions>
+    <models>
+      <textIdModel id="191" textId="48">
+        <synonyms/>
+      </textIdModel>
+      <imageIdModel id="192" imageId="55001"/>
+      <imageIdModel id="194" imageId="55002"/>
+      <raPreviewModel id="193" modelType="StatePreview" previewState="200"/>
+    </models>
+    <hmiStates>
+      <hmiState id="200" text="iPhone Mirroring" textModel="191">
+        <components>
+          <image id="201" model="194">
             <properties>
               <property id="3" value="true"/>
               <property id="9" value="549"/>

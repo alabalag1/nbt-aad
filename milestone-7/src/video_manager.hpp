@@ -41,6 +41,9 @@ public:
     // NBT_CP_PURGE=1: destroy the factory CarPlay context (cpvideoctx) as before v1.9.50 instead of detaching it.
     static bool cpPurge();
     bool prepareForSession();
+    // iPhone mirroring: the stream's own size (portrait 332x720, landscape apps wider). The next prepareForSession()
+    // rebuilds the decoder for it and fits the picture into the panel, centred. 0x0 = Android Auto's 1280x720 canvas.
+    void setSourceGeometry(uint32_t width, uint32_t height);
     bool retuneForCarPlay();
     bool decoderInCarPlayMode();
     // Closes the decoder context (and with it mm-renderer's winid=1280 window) while iDrive has the screen. Needed once
@@ -171,6 +174,11 @@ private:
     std::string cp_name_;           // decoder_mutex_: its name
     MmrCtxSnapshot cp_snap_;        // decoder_mutex_: what it had attached (PPS) before we detached it
     void verifyOverlayOrder();
+    volatile uint32_t src_w_, src_h_;   // setSourceGeometry(); 0 = Android Auto canvas. Read by the worker
+    uint32_t built_w_, built_h_;        // guarded by decoder_mutex_: what the current context was created for
+    uint32_t srcWidth() const;
+    uint32_t srcHeight() const;
+    uint32_t srcFps() const;
     FrameQueue frame_queue_;            // guarded by queue_mutex_
     std::vector<uint8_t> cached_codec_config_;
 };

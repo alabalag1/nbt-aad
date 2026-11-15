@@ -122,6 +122,7 @@
 #include "spp_direction.hpp"
 #include "neutral_resume.hpp"
 #include "cluster/nav_core.hpp"
+#include "mirror_input.hpp"
 #include <termios.h>
 
 #include <stdio.h>
@@ -161,6 +162,7 @@ static nbt::car::InputActivity g_carInput;   // any car control the driver touch
 static nbt::car::CarGps g_gps;               // the car's GPS fix: a consumer of g_most
 static nbt::car::CarVehicle g_vehicle;       // the car's wheel speed, gear and parking brake: a consumer of g_most
 static nbt::most::Trace g_mostTrace;         // NBT_MOST_LOG=1: logs what g_most sees
+static bool aaBusy();                         // mirroring yields to Android Auto (defined with g_sessionActive)
 
 // ---- Single instance + control port (NBT_CTL=0 disables, NBT_CTL_PORT overrides 52790) -------------------
 // The iDrive menu entry (plugin/libhmiaad.so) simply starts /opt/aa/nbt-aad every time it is selected. The first
@@ -518,6 +520,7 @@ static volatile bool g_sessionActive = false;   // AA session running (set by co
 static nbt::SessionOwner g_owner;               // which transport that session came in on (session_owner.hpp)
 static pthread_mutex_t g_connectMutex = PTHREAD_MUTEX_INITIALIZER;   // serializes startSession() (TCP and USB)
 static bool wirelessSessionActive() { return g_owner.get() == nbt::kTransportTcp; }
+static bool aaBusy() { return g_session.isActive() || g_sessionActive; }
 static nbt::VideoManager* g_video = NULL;       // for the session callbacks (valid between init and teardown)
 // The audio mode (NBT_AUDIO_MODE=bt|browser|a2i, audio/backend.hpp): BtAudio, BrowserAudio or A2iAudio, picked once
 // at start-up. Same lifetime rule as g_video.
@@ -1292,7 +1295,10 @@ static void startSession(int client_fd, nbt::TcpServer* server, nbt::Transport t
     g_sessionActive = true;
     resetMedia("new session");
     if (server) server->markSessionActive();
-    if (g_video && nbt::VideoManager::cpHandoff()) g_video->prepareForSession();   // decoder ready before frames
+    if (g_video) {   // decoder ready before frames; back to the Android Auto canvas if an iPhone mirror set its own size
+        g_video->setSourceGeometry(0, 0);
+        g_video->prepareForSession();   // no-op unless there's no context yet or it was built for CarPlay / a mirror
+    }
     if (!g_session.start(client_fd)) {
         // start() closed the fd; make sure the server does not wait for a session that never began
         g_owner.set(nbt::kTransportNone);
@@ -1730,7 +1736,7 @@ static void onKnobEvent(const nbt::car::CcsEvent& ev, void* user) {
     }
 }
 
-#define NBT_AAD_BUILD "v1.9.78-pr218"
+#define NBT_AAD_BUILD "v1.9.78-pr218-mirror"
 
 // Marker the RHMI app scans for (scanFileFor) to show the daemon version without spawning it:
 // keep the prefix exact.
@@ -2122,6 +2128,7 @@ int main(int argc, char* argv[]) {
         printf("[Main] Wireless off (%s): outbound phone scanner mode.\n",
                nbt::usbEnabled() ? "Android Auto over USB is selected, so Wi-Fi is not offered" : "NBT_WIRELESS=0");
     }
+    nbt::startMirrorInput(&video, &aaBusy);   // iPhone screen mirroring (airplay-mirrord), display only
 
     printf("[Main] Daemon running. Press Ctrl+C to terminate.\n");
 
@@ -2194,7 +2201,8 @@ int main(int argc, char* argv[]) {
             g_kombiNav.logHealth();
         }
         bool act = g_session.isActive();
-        if (act || g_sessionActive) cp_idle_ticks = 0;
+        bool live = act || nbt::mirrorActive();   // a phone is on screen: Android Auto, or an iPhone mirroring
+        if (live || g_sessionActive) cp_idle_ticks = 0;
         else if (++cp_idle_ticks == 10 && nbt::VideoManager::cpHandoff()) video.retuneForCarPlay();
         {
             int n = dayNightToNight(g_dayNight);           // -1: no change / invalid, keep what the phone has
@@ -2205,7 +2213,8 @@ int main(int argc, char* argv[]) {
             }
         }
         {
-            const char* st = act ? "connected" : ((g_btLink || g_sessionActive) ? "connecting" : "idle");
+            // "mirroring": an iPhone is on screen (the iPhone Mirroring entry shows it; the Android Auto entry stays "Start")
+            const char* st = act ? "connected" : live ? "mirroring" : ((g_btLink || g_sessionActive) ? "connecting" : "idle");
             uint32_t mp = g_keyToPhoneMs;
             bool menuRecent = mp && (uint32_t)(monoMs() - mp) < 3000u;   // a hard key went to the phone
             if (mp && !menuRecent) g_keyToPhoneMs = 0;
@@ -2256,7 +2265,7 @@ int main(int argc, char* argv[]) {
         if ((log_sync_ticks % 20) == 0) serviceUsbLog(false);   // every 5 s: stick plugged in / removed, checkbox
         checkRamLogCap();                                         // every tick: RAM log 5 MB cap
         if (logPersistent() && (log_sync_ticks % 8) == 0) { fflush(stdout); fsync(fileno(stdout)); }
-        if (act && !was_active) { g_userExit = 0; g_carExit = 0; }   // a new phone session comes up in Android Auto
+        if (live && !was_active) { g_userExit = 0; g_carExit = 0; }   // a new phone session comes up in Android Auto
         if (g_backState == 1 && (uint32_t)(monoMs() - g_backDownMs) >= backHoldMs()) {
             // Car-side minimize, like reverse: only the overlay goes down. Telling the phone (unrequested UNFOCUSED,
             // NBT_BACK_HOLD_FOCUS=1) can make it ask for the screen right back, which re-showed AA at once.
@@ -2398,7 +2407,7 @@ int main(int argc, char* argv[]) {
                 ++g_idrAsks;
             }
         }
-        bool want = (hide_idle ? act : true) && !g_userExit && !reverse && !park && !camera && !dm_peek;
+        bool want = (hide_idle ? live : true) && !g_userExit && !reverse && !park && !camera && !dm_peek;
         if (want && act && !overlay_on && (video.decoderInCarPlayMode() || video.decoderParked())) {
             printf("[Main] back to Android Auto after %s: rebuilding the decoder context\n",
                    video.decoderParked() ? "iDrive (overlay had surface 1280)" : "CarPlay");
@@ -2447,7 +2456,7 @@ int main(int argc, char* argv[]) {
                 if (reassert_ticks == 20) reassert_ticks = -1;
             }
         }
-        if (act) {
+        if (live) {
             if (!was_active) {
                 // The HMI / LayerManager may have rearranged layers and window order since the daemon
                 // started (minutes ago, with iDrive in use): put our window back on top for the session.
@@ -2473,7 +2482,7 @@ int main(int argc, char* argv[]) {
         } else {
             active_ticks = 0;
         }
-        was_active = act;
+        was_active = live;
     }
 
     // Cleanup & graceful teardown
@@ -2490,6 +2499,7 @@ int main(int argc, char* argv[]) {
     voice.deactivate("shutdown");   // never leave the car mic scenario active behind us
     g_kombiNav.stop();              // clears a cluster/HUD arrow (one quick attempt)
     printf("[Main] [+%.2f s] cluster/HUD arrows stopped\n", upSec() - t0);
+    nbt::stopMirrorReceiver();
     tcp_server.stop();         // no more onClientConnected -> no session can start behind our back
     printf("[Main] [+%.2f s] listener stopped\n", upSec() - t0);
     // Before usb.stop(), which takes the link away. A phone that isn't told keeps streaming into the void and ignores

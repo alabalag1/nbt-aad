@@ -61,7 +61,8 @@ SRCS = src/main.cpp \
        src/cluster/nav_core.cpp \
        src/cluster/hud_terminal.cpp \
        src/cluster/hud6wa_display.cpp \
-       src/volume_osd.cpp
+       src/volume_osd.cpp \
+       src/mirror_input.cpp
 
 # C sources: the vendored speexdsp resampler (third_party/speexdsp, BSD-3), built through src/audio/speex.c.
 CSRCS = src/audio/speex.c
